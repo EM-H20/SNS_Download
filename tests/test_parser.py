@@ -79,3 +79,27 @@ class TestReelsURLParser:
         url = "https://instagram.com/p/ABC_123-xyz/?utm=test"
         result = ReelsURLParser.normalize_url(url)
         assert result == "https://www.instagram.com/reel/ABC_123-xyz/"
+
+    def test_extract_shortcode_with_hyphen_12_chars(self):
+        """Shortcode with hyphens and 12 characters should work."""
+        url = "https://www.instagram.com/p/DO-u-YwD6Rt/"
+        result = ReelsURLParser.extract_shortcode(url)
+        assert result == "DO-u-YwD6Rt"
+
+    def test_extract_shortcode_with_multiple_query_params(self):
+        """URL with multiple query parameters should be normalized."""
+        url = "https://www.instagram.com/p/DO-u-YwD6Rt?img_index=11&utm_source=share"
+        result = ReelsURLParser.extract_shortcode(url)
+        assert result == "DO-u-YwD6Rt"
+
+    def test_extract_shortcode_8_chars(self):
+        """Short 8-character shortcode should work."""
+        url = "https://instagram.com/reel/ABC12345/"
+        result = ReelsURLParser.extract_shortcode(url)
+        assert result == "ABC12345"
+
+    def test_extract_shortcode_15_chars(self):
+        """Long 15-character shortcode should work."""
+        url = "https://instagram.com/reel/ABC-123_456-xyz/"
+        result = ReelsURLParser.extract_shortcode(url)
+        assert result == "ABC-123_456-xyz"

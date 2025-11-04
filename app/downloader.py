@@ -86,6 +86,15 @@ class ReelsDownloader:
             # First, extract metadata without downloading
             info = self._extract_info(url)
 
+            # Check for carousel/album posts
+            # yt-dlp marks carousel posts with playlist info
+            if info.get('_type') == 'playlist' or info.get('entries'):
+                logger.warning(f"Carousel post detected: {shortcode}. Only first item will be downloaded.")
+                logger.warning("For full carousel support, configure Instagram credentials in .env")
+                # Get first entry from playlist
+                if info.get('entries'):
+                    info = info['entries'][0]
+
             # Determine media type
             is_video = info.get('ext') in ['mp4', 'webm', 'mov'] or info.get('vcodec') != 'none'
             media_type = "video" if is_video else "photo"
@@ -212,11 +221,25 @@ class ReelsDownloader:
                 logger.info(f"Media file found: {media_file}")
                 return media_file
 
-        # If not found with expected naming, search directory
+        # If not found with expected naming, search directory for any media file
+        # Try glob with shortcode first
         media_files = list(target_dir.glob(f"*{shortcode}*"))
         if media_files:
-            logger.warning(f"Using alternative file: {media_files[0]}")
+            logger.warning(f"Using alternative file with shortcode: {media_files[0]}")
             return media_files[0]
+
+        # Try any file with date prefix
+        media_files = list(target_dir.glob(f"{date_str}_*"))
+        if media_files:
+            logger.warning(f"Using alternative file with date: {media_files[0]}")
+            return media_files[0]
+
+        # Try any media file in directory
+        for ext in possible_extensions:
+            media_files = list(target_dir.glob(f"*.{ext}"))
+            if media_files:
+                logger.warning(f"Using any media file found: {media_files[0]}")
+                return media_files[0]
 
         raise DownloadFailedError(
             "Media file not found after download",

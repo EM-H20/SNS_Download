@@ -14,14 +14,17 @@ class ReelsURLParser:
     """Parser for Instagram Reels URLs with support for multiple formats."""
 
     # Instagram uses shortcodes for both /reel/ and /p/ paths
-    # Pattern: alphanumeric + underscore + hyphen, typically 11 characters
-    SHORTCODE_PATTERN = re.compile(r'^[A-Za-z0-9_-]{11}$')
+    # Pattern: alphanumeric + underscore + hyphen, typically 8-15 characters
+    # Instagram uses variable-length shortcodes (observed: 8-15 chars)
+    SHORTCODE_PATTERN = re.compile(r'^[A-Za-z0-9_-]{8,15}$')
 
     # Supported URL patterns for Reels content
     URL_PATTERNS = [
         re.compile(r'instagram\.com/reel/([A-Za-z0-9_-]+)'),
         re.compile(r'instagram\.com/p/([A-Za-z0-9_-]+)'),  # Posts can also be videos
         re.compile(r'instagram\.com/tv/([A-Za-z0-9_-]+)'),  # Legacy IGTV format
+        re.compile(r'instagram\.com/[^/]+/reel/([A-Za-z0-9_-]+)'),  # Username + reel
+        re.compile(r'instagram\.com/[^/]+/p/([A-Za-z0-9_-]+)'),  # Username + post
     ]
 
     @classmethod

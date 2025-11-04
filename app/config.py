@@ -6,16 +6,18 @@ Centralizes all configuration with type validation and environment variable supp
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 
 
 class Settings(BaseSettings):
     """Application settings with validation and type safety."""
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False
+    )
 
     # Server Configuration
     server_host: str = "127.0.0.1"

@@ -29,7 +29,7 @@ from app.models import (
     HealthCheckResponse,
 )
 from app.parser import ReelsURLParser
-from app.downloader import ReelsDownloader
+from app.downloader_router import InstagramDownloaderRouter
 from app.exceptions import (
     ReelsDownloaderError,
     InvalidURLError,
@@ -49,8 +49,8 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Instagram Reels Downloader API",
-    description="Download Instagram Reels from public accounts without authentication",
+    title="Instagram Media Downloader API",
+    description="Download Instagram Reels, videos, photos, and carousels with intelligent routing",
     version=__version__,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -78,8 +78,8 @@ if settings.download_dir.exists():
         name="downloads"
     )
 
-# Initialize downloader singleton (uses yt-dlp)
-downloader = ReelsDownloader()
+# Initialize intelligent router (automatically selects yt-dlp or Instaloader)
+downloader = InstagramDownloaderRouter()
 parser = ReelsURLParser()
 
 
@@ -117,40 +117,51 @@ async def health_check():
         503: {"model": ErrorResponse, "description": "Instagram API error"},
     },
     tags=["Download"],
-    summary="Download Instagram media (Reels, videos, photos)"
+    summary="Download Instagram media (Reels, videos, photos, carousels)"
 )
 @limiter.limit(f"{settings.rate_limit_per_minute}/minute")
 async def download_reels(request: Request, payload: DownloadRequest):
-    """Download Instagram media from public accounts.
+    """Download Instagram media with intelligent routing.
 
     **Supported Content Types**:
-    - Reels (videos)
-    - Regular video posts
-    - Photo posts (single images)
+    - Video Reels (no login required)
+    - Regular video posts (no login required)
+    - Photo posts (requires Instagram credentials)
+    - Carousel posts (requires Instagram credentials for full download)
 
-    **Important**: Only works with public accounts. Private accounts will return 403.
+    **Authentication**:
+    - Videos: No authentication needed, uses yt-dlp
+    - Photos/Carousels: Requires Instagram credentials in .env file, uses Instaloader
 
     **Rate Limiting**: Limited to {settings.rate_limit_per_minute} requests per minute per IP.
 
-    **Response**: Returns URLs to access the downloaded media and thumbnail (if applicable).
+    **Response**: Returns URLs to access downloaded media. For carousels, returns array of URLs.
     """
     try:
         # Extract shortcode from URL
         shortcode = parser.extract_shortcode(str(payload.url))
         logger.info(f"Processing download request for shortcode: {shortcode}")
 
-        # Download media (video or photo) and thumbnail
-        media_path, thumbnail_path, metadata = downloader.download(shortcode)
+        # Download using intelligent router (returns media_path(s), thumbnail, metadata, type)
+        result = downloader.download(shortcode)
+        media_paths, thumbnail_path, metadata, media_type = result
 
-        # Determine media type from file extension
-        media_type = "video" if media_path.suffix.lower() == ".mp4" else "photo"
+        # Handle single vs multiple media files
+        if isinstance(media_paths, list):
+            # Carousel - multiple files
+            media_urls = [f"/downloads/{shortcode}/{p.name}" for p in media_paths]
+            primary_url = media_urls[0]
+        else:
+            # Single file
+            primary_url = f"/downloads/{shortcode}/{media_paths.name}"
+            media_urls = [primary_url]
 
-        # Generate access URLs (relative to our server)
-        media_url = f"/downloads/{shortcode}/{media_path.name}"
+        # Generate thumbnail URL
         thumbnail_url = f"/downloads/{shortcode}/{thumbnail_path.name}" if thumbnail_path else None
 
         return DownloadResponse(
-            media_url=media_url,
+            media_url=primary_url,
+            media_urls=media_urls if len(media_urls) > 1 else None,
             media_type=media_type,
             thumbnail_url=thumbnail_url,
             metadata=metadata
@@ -236,27 +247,50 @@ async def download_reels(request: Request, payload: DownloadRequest):
 
 
 @app.get(
+    "/api/capabilities",
+    tags=["Info"],
+    summary="Get downloader capabilities"
+)
+async def get_capabilities():
+    """Get current API capabilities based on configuration."""
+    capabilities = downloader.get_capabilities()
+    return {
+        "capabilities": capabilities,
+        "note": "Photo and full carousel support require Instagram credentials in .env"
+    }
+
+
+@app.get(
     "/",
     tags=["Info"],
     summary="API information"
 )
 async def root():
     """Get API information and usage instructions."""
+    capabilities = downloader.get_capabilities()
+
     return {
-        "name": "Instagram Reels Downloader API",
+        "name": "Instagram Media Downloader API",
         "version": __version__,
         "docs": "/docs",
         "health": "/health",
+        "capabilities": "/api/capabilities",
         "endpoints": {
             "download": "POST /api/download",
             "access_media": "GET /downloads/{shortcode}/{filename}"
+        },
+        "features": {
+            "video_reels": "✅ Supported (no login)",
+            "video_posts": "✅ Supported (no login)",
+            "photo_posts": "✅ Supported (requires login)" if capabilities["photo_posts"] else "❌ Requires Instagram credentials",
+            "carousel_posts": "✅ Full download (requires login)" if capabilities["carousel_full"] else "⚠️ First item only (full support requires credentials)"
         },
         "usage": {
             "example_request": {
                 "url": "https://www.instagram.com/reel/ABC123/",
                 "quality": "high"
             },
-            "note": "Only public accounts are supported"
+            "authentication": "Configure INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD in .env for photo/carousel support"
         }
     }
 

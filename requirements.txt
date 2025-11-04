@@ -1,7 +1,7 @@
 # Core Web Framework
-# Note: Using compatible versions for Python 3.13 and Pydantic v1
-fastapi==0.95.2
-uvicorn[standard]==0.22.0
+# Note: Updated for Python 3.13 compatibility
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
 
 # Instagram Scraping
 # Note: Using both yt-dlp and instaloader for hybrid approach
@@ -11,14 +11,15 @@ yt-dlp==2024.10.22
 instaloader==4.10.3
 
 # HTTP & Async Operations
-requests==2.31.0
+requests>=2.32.2
 httpx==0.25.1
 aiofiles==23.2.1
 Pillow>=10.0.0  # For thumbnail image processing
 
 # Data Validation & Configuration
-# Note: Using pydantic v1 for better Python 3.13 compatibility
-pydantic==1.10.13
+# Note: Using pydantic v2 for Python 3.13 compatibility
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
 python-dotenv==1.0.0
 
 # Rate Limiting & Caching
