@@ -61,3 +61,6 @@ htmlcov/
 
 # Documentation files (Korean analysis)
 Instagram_401_문제.md
+
+# Claude Code configuration
+CLAUDE.md
