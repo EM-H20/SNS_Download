@@ -22,7 +22,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from app import __version__
-from app.config import settings
+from app.config import settings, account_manager
 from app.models import (
     DownloadRequest,
     DownloadResponse,
@@ -421,6 +421,39 @@ async def get_temp_storage_stats():
 
 
 @app.get(
+    "/api/accounts/stats",
+    tags=["Monitoring"],
+    summary="Get Instagram account rotation statistics"
+)
+async def get_account_stats():
+    """Get Instagram account rotation statistics and status.
+
+    **Returns**:
+    - Total accounts configured
+    - Available vs blocked accounts
+    - Individual account statistics
+    - Request distribution
+    """
+    if account_manager is None:
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "status": "no_accounts",
+                "message": "No Instagram accounts configured"
+            }
+        )
+
+    stats = account_manager.get_stats()
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "status": "success",
+            **stats
+        }
+    )
+
+
+@app.get(
     "/",
     tags=["Info"],
     summary="API information"
@@ -437,6 +470,7 @@ async def root():
             "ai_analysis": "POST /api/analyze - AI analysis workflow (download → analyze → delete)",
             "webview_urls": "GET /api/media/webview?url=... - Get embed URLs for webview",
             "temp_stats": "GET /api/temp-storage/stats - Temporary storage statistics",
+            "account_stats": "GET /api/accounts/stats - Instagram account rotation statistics",
             "access_media": "GET /downloads/{shortcode}/{filename} - Access downloaded files"
         },
         "legal_workflow": {

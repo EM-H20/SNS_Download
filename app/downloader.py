@@ -23,7 +23,7 @@ import requests
 from PIL import Image
 from io import BytesIO
 
-from app.config import settings
+from app.config import settings, account_manager
 from app.exceptions import (
     PrivateAccountError,
     ContentNotFoundError,
@@ -47,28 +47,68 @@ class ReelsDownloader:
         # Strategy 1: Proxy downloader (no auth required)
         self.proxy_downloader = InstagramProxyDownloader()
 
-        # Strategy 2: yt-dlp configuration
-        self.base_ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'socket_timeout': settings.request_timeout_seconds,
-            'retries': settings.max_retries,
-            'max_filesize': settings.max_file_size_mb * 1024 * 1024,  # Convert MB to bytes
-            'http_headers': {
-                'User-Agent': settings.user_agent,
-            },
-        }
-
-        # Check if authentication is available
-        self.has_auth = bool(settings.instagram_username and settings.instagram_password)
+        # Check if account manager is available (다중 계정 지원)
+        self.has_auth = account_manager is not None and account_manager.has_available_accounts()
 
         if self.has_auth:
-            self.base_ydl_opts['username'] = settings.instagram_username
-            self.base_ydl_opts['password'] = settings.instagram_password
-            logger.info(f"Instagram authentication enabled for user: {settings.instagram_username}")
+            logger.info(f"Instagram authentication enabled with {len(account_manager.accounts)} account(s)")
         else:
             logger.info("No authentication - using proxy/embed methods for public content")
+
+        # Current account for this download (will be set per-request)
+        self.current_account = None
+
+    def _check_existing_download(
+        self,
+        shortcode: str,
+        target_dir: Path
+    ) -> Optional[Tuple[Path, Optional[Path], MediaMetadata]]:
+        """기존 다운로드 파일 체크 (중복 다운로드 방지).
+
+        Args:
+            shortcode: Instagram shortcode
+            target_dir: Target directory
+
+        Returns:
+            기존 파일이 있으면 (media_path, thumbnail_path, metadata), 없으면 None
+        """
+        # shortcode 패턴으로 미디어 파일 검색
+        possible_extensions = ['mp4', 'webm', 'mov', 'jpg', 'jpeg', 'png']
+
+        for ext in possible_extensions:
+            media_files = list(target_dir.glob(f"*{shortcode}.{ext}"))
+            if media_files:
+                media_path = media_files[0]
+
+                # 썸네일 찾기
+                thumbnail_path = None
+                thumbnail_patterns = [
+                    target_dir / f"*{shortcode}_thumb.jpg",
+                    target_dir / f"*{shortcode}_thumb.jpeg",
+                    target_dir / f"*{shortcode}.webp",
+                ]
+                for pattern in thumbnail_patterns:
+                    thumbs = list(target_dir.glob(pattern.name))
+                    if thumbs:
+                        thumbnail_path = thumbs[0]
+                        break
+
+                # 메타데이터 생성
+                is_video = ext in ['mp4', 'webm', 'mov']
+                metadata = MediaMetadata(
+                    shortcode=shortcode,
+                    duration_seconds=None,
+                    width=None,
+                    height=None,
+                    size_bytes=media_path.stat().st_size if media_path.exists() else None,
+                    download_timestamp=datetime.fromtimestamp(media_path.stat().st_mtime) if media_path.exists() else datetime.utcnow(),
+                )
+
+                logger.info(f"Found existing file: {media_path} ({metadata.size_bytes / (1024*1024):.1f}MB)")
+                return media_path, thumbnail_path, metadata
+
+        # 기존 파일 없음
+        return None
 
     def download(self, shortcode: str) -> Tuple[Path, Optional[Path], MediaMetadata]:
         """Download Instagram media using best available method.
@@ -93,15 +133,36 @@ class ReelsDownloader:
         target_dir = settings.download_dir / shortcode
         target_dir.mkdir(parents=True, exist_ok=True)
 
+        # 중복 다운로드 체크 (이미 다운로드된 파일이 있으면 재사용)
+        existing_media = self._check_existing_download(shortcode, target_dir)
+        if existing_media:
+            media_path, thumbnail_path, metadata = existing_media
+            logger.info(f"Using existing download for shortcode: {shortcode} (skip re-download)")
+            return media_path, thumbnail_path, metadata
+
         logger.info(f"Starting download for shortcode: {shortcode}")
 
         # Strategy 1: Try yt-dlp with auth first (BEST QUALITY)
         if self.has_auth:
-            try:
-                logger.info("Trying yt-dlp with authentication...")
-                return self._download_via_ytdlp(shortcode, target_dir)
-            except Exception as e:
-                logger.warning(f"yt-dlp method failed: {e}")
+            # 랜덤 계정 선택 (차단 우회)
+            self.current_account = account_manager.get_random_account()
+
+            if self.current_account:
+                try:
+                    logger.info(f"Trying yt-dlp with account: {self.current_account.username}")
+                    result = self._download_via_ytdlp(shortcode, target_dir)
+
+                    # 성공 기록
+                    account_manager.mark_account_success(self.current_account.username)
+                    return result
+
+                except Exception as e:
+                    logger.warning(f"yt-dlp method failed with {self.current_account.username}: {e}")
+
+                    # 실패 기록 (차단 감지 시 자동으로 해당 계정 일시 차단)
+                    account_manager.mark_account_failure(self.current_account.username)
+            else:
+                logger.warning("No available Instagram accounts (all blocked)")
 
         # Strategy 2: Fallback to proxy/embed method (NO AUTH REQUIRED)
         try:
@@ -290,6 +351,31 @@ class ReelsDownloader:
                 details={"shortcode": shortcode, "error_type": type(e).__name__}
             )
 
+    def _get_ydl_opts(self) -> Dict[str, Any]:
+        """yt-dlp 옵션 생성 (현재 계정 및 랜덤 USER_AGENT 적용).
+
+        Returns:
+            yt-dlp 옵션 딕셔너리
+        """
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'socket_timeout': settings.request_timeout_seconds,
+            'retries': settings.max_retries,
+            'max_filesize': settings.max_file_size_mb * 1024 * 1024,
+            'http_headers': {
+                'User-Agent': settings.get_random_user_agent(),  # 매 요청마다 랜덤 USER_AGENT
+            },
+        }
+
+        # 현재 선택된 계정 정보 추가
+        if self.current_account:
+            ydl_opts['username'] = self.current_account.username
+            ydl_opts['password'] = self.current_account.password
+
+        return ydl_opts
+
     def _extract_info(self, url: str) -> Dict[str, Any]:
         """Extract metadata from Instagram URL without downloading.
 
@@ -297,7 +383,7 @@ class ReelsDownloader:
             Dictionary with video/photo information
         """
         ydl_opts = {
-            **self.base_ydl_opts,
+            **self._get_ydl_opts(),
             'skip_download': True,  # Only extract info
         }
 
@@ -321,7 +407,7 @@ class ReelsDownloader:
         output_template = str(target_dir / f"{date_str}_{shortcode}.%(ext)s")
 
         ydl_opts = {
-            **self.base_ydl_opts,
+            **self._get_ydl_opts(),
             'outtmpl': output_template,
             'format': 'best',  # Download best quality
         }
