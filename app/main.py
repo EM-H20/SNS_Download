@@ -29,7 +29,8 @@ from app.models import (
     ErrorResponse,
     HealthCheckResponse,
 )
-from app.universal_downloader import UniversalDownloader
+from app.downloader import ReelsDownloader
+from app.parser import ReelsURLParser
 from app.metadata_storage import MetadataStorage
 from app.temp_storage import temp_storage
 from app.ai_analyzer import video_analyzer, analyze_and_cleanup
@@ -81,8 +82,8 @@ if settings.download_dir.exists():
         name="downloads"
     )
 
-# Initialize universal downloader (supports all platforms)
-universal_downloader = UniversalDownloader()
+# Initialize Instagram downloader
+downloader = ReelsDownloader()
 
 
 @app.get(
@@ -95,8 +96,8 @@ async def health_check():
     """Check service health and dependencies."""
     checks = {
         "download_dir_writable": settings.download_dir.exists() and settings.download_dir.is_dir(),
-        "downloader_initialized": universal_downloader is not None,
-        "supported_platforms": len(universal_downloader.get_supported_platforms()),
+        "downloader_initialized": downloader is not None,
+        "instagram_auth": downloader.has_auth if downloader else False,
     }
 
     status_value = "healthy" if all(checks.values()) else "degraded"
@@ -137,12 +138,16 @@ async def download_media(request: Request, payload: DownloadRequest):
     **Response**: Returns URLs to access the downloaded media and thumbnail (if applicable).
     """
     try:
-        # Download using universal downloader (auto-detects platform)
+        # Parse Instagram URL and download
         url_str = str(payload.url)
         logger.info(f"Processing download request for URL: {url_str}")
 
-        # Download media using universal downloader
-        media_path, thumbnail_path, metadata, platform_name = universal_downloader.download(url_str)
+        # Parse Instagram URL to get shortcode
+        shortcode = ReelsURLParser.extract_shortcode(url_str)
+
+        # Download media using Instagram downloader
+        media_path, thumbnail_path, metadata = downloader.download(shortcode)
+        platform_name = "instagram"
 
         # Determine media type from file extension
         media_type = "video" if media_path.suffix.lower() in ['.mp4', '.webm', '.mkv'] else "photo"
@@ -280,8 +285,10 @@ async def analyze_video(request: Request, payload: DownloadRequest):
         url_str = str(payload.url)
         logger.info(f"Processing AI analysis request for URL: {url_str}")
 
-        # Download video temporarily
-        media_path, thumbnail_path, metadata, platform_name = universal_downloader.download(url_str)
+        # Parse Instagram URL and download temporarily
+        shortcode = ReelsURLParser.extract_shortcode(url_str)
+        media_path, thumbnail_path, metadata = downloader.download(shortcode)
+        platform_name = "instagram"
 
         # Only analyze videos (not photos)
         if media_path.suffix.lower() not in ['.mp4', '.webm', '.mkv']:
@@ -346,15 +353,15 @@ async def get_webview_media_url(request: Request, url: str):
     try:
         logger.info(f"Processing webview URL request for: {url}")
 
-        # Detect platform
-        platform = universal_downloader.detect_platform(url)
-
-        if not platform:
+        # Check if it's Instagram URL
+        try:
+            shortcode = ReelsURLParser.extract_shortcode(url)
+        except (InvalidURLError, ValueError):
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content=ErrorResponse(
                     error_type="unsupported_platform",
-                    message="Unsupported platform or invalid URL",
+                    message="Only Instagram URLs are supported",
                     details={"url": url}
                 ).dict()
             )
@@ -443,7 +450,7 @@ async def root():
             "videos": "Use /api/analyze for AI analysis (fair use compliant)",
             "photos": "Use /api/media/webview for direct embed URLs"
         },
-        "supported_platforms": [p["platform"] for p in universal_downloader.get_supported_platforms()],
+        "supported_platforms": ["instagram"],
         "usage": {
             "ai_analysis_example": {
                 "url": "https://www.youtube.com/shorts/RN4U9Gw-NZ8",

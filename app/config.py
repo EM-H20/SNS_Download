@@ -39,11 +39,6 @@ class Settings(BaseSettings):
     instagram_username: Optional[str] = None
     instagram_password: Optional[str] = None
 
-    # Instagram Graph API (Official API for business accounts)
-    instagram_graph_api_token: Optional[str] = None
-    facebook_app_id: Optional[str] = None
-    facebook_app_secret: Optional[str] = None
-
     # Metadata Collection
     save_metadata: bool = True  # Save captions, hashtags, etc. to JSON
     include_comments: bool = False  # Fetch comments (requires Instagram auth)
