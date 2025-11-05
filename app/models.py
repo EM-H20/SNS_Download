@@ -7,12 +7,16 @@ from pydantic import BaseModel, HttpUrl, Field, validator
 
 
 class DownloadRequest(BaseModel):
-    """Request payload for initiating a Reels download."""
+    """Request payload for initiating media download from supported SNS platforms."""
 
     url: HttpUrl = Field(
         ...,
-        description="Instagram Reels URL (e.g., https://instagram.com/reel/ABC123/)",
-        examples=["https://www.instagram.com/reel/ABC123/"]
+        description="SNS media URL (Instagram, YouTube, TikTok, etc.)",
+        examples=[
+            "https://www.instagram.com/reel/ABC123/",
+            "https://www.youtube.com/shorts/RN4U9Gw-NZ8",
+            "https://www.instagram.com/p/ABC123/",
+        ]
     )
 
     quality: Literal["high", "medium", "low"] = Field(
@@ -21,10 +25,15 @@ class DownloadRequest(BaseModel):
     )
 
     @validator("url")
-    def validate_instagram_url(cls, v: HttpUrl) -> HttpUrl:
-        """Ensure URL is from Instagram domain."""
-        if "instagram.com" not in str(v):
-            raise ValueError("URL must be from instagram.com domain")
+    def validate_sns_url(cls, v: HttpUrl) -> HttpUrl:
+        """Ensure URL is from supported SNS platforms."""
+        url_str = str(v)
+        supported_domains = ["instagram.com", "youtube.com", "youtu.be", "tiktok.com", "twitter.com", "x.com"]
+
+        if not any(domain in url_str for domain in supported_domains):
+            raise ValueError(
+                f"URL must be from supported platforms: {', '.join(supported_domains)}"
+            )
         return v
 
 
@@ -51,6 +60,12 @@ class DownloadResponse(BaseModel):
     media_type: str = Field(..., description="Type of media: 'video', 'photo', or 'carousel'")
     thumbnail_url: Optional[str] = Field(None, description="URL to access the thumbnail (only for videos)")
     metadata: MediaMetadata = Field(..., description="Media metadata")
+
+    # Text metadata fields
+    metadata_url: Optional[str] = Field(None, description="URL to access full metadata JSON file")
+    caption: Optional[str] = Field(None, description="Post caption/description text")
+    hashtags: Optional[List[str]] = Field(None, description="Extracted hashtags from caption")
+    mentions: Optional[List[str]] = Field(None, description="Extracted @mentions from caption")
 
 
 class ErrorResponse(BaseModel):

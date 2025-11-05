@@ -53,3 +53,14 @@ class InstagramAPIError(ReelsDownloaderError):
     This requires code updates to adapt to new Instagram API structure.
     """
     pass
+
+
+class AuthenticationError(ReelsDownloaderError):
+    """Raised when authentication fails or token is invalid.
+
+    Common causes:
+    - Invalid or expired access token
+    - Missing credentials
+    - Insufficient permissions
+    """
+    pass

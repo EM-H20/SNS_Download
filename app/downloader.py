@@ -1,13 +1,15 @@
-"""Instagram media download engine using yt-dlp.
+"""Instagram media download engine with multiple fallback strategies.
 
-Switched from Instaloader to yt-dlp due to Instagram API 401 errors (Nov 2024).
-yt-dlp handles Instagram's anti-bot measures better and is actively maintained.
+Hybrid approach for maximum compatibility:
+1. Proxy/Embed method (no auth) - Fast, works for public content
+2. yt-dlp (optional auth) - Fallback for videos
+3. Instaloader (requires auth) - Full feature support
 
 Design considerations:
-- yt-dlp handles TLS fingerprinting and browser emulation internally
-- No authentication required for public posts
+- Try non-auth methods first for speed and simplicity
+- Fall back to authenticated methods when needed
 - Rate limiting is handled at application level
-- Supports videos, photos, and Reels
+- Supports videos, photos, and carousel posts
 """
 
 import logging
@@ -17,6 +19,9 @@ from typing import Optional, Tuple, Dict, Any
 from datetime import datetime
 
 import yt_dlp
+import requests
+from PIL import Image
+from io import BytesIO
 
 from app.config import settings
 from app.exceptions import (
@@ -27,58 +32,172 @@ from app.exceptions import (
     InstagramAPIError,
 )
 from app.models import MediaMetadata
+from app.metadata_extractor import InstagramMetadataExtractor
+from app.metadata_storage import MetadataStorage
+from app.instagram_proxy import InstagramProxyDownloader
 
 logger = logging.getLogger(__name__)
 
 
 class ReelsDownloader:
-    """Production-grade Instagram media downloader using yt-dlp."""
+    """Production-grade Instagram media downloader with fallback strategies."""
 
     def __init__(self):
-        """Initialize yt-dlp with optimized settings for Instagram."""
-        # Base configuration for yt-dlp
+        """Initialize downloader with multiple strategies."""
+        # Strategy 1: Proxy downloader (no auth required)
+        self.proxy_downloader = InstagramProxyDownloader()
+
+        # Strategy 2: yt-dlp configuration
         self.base_ydl_opts = {
-            'quiet': True,  # Suppress console output
-            'no_warnings': True,  # Suppress warnings
-            'extract_flat': False,  # Extract full metadata
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
             'socket_timeout': settings.request_timeout_seconds,
             'retries': settings.max_retries,
-            # Custom user agent to avoid bot detection
+            'max_filesize': settings.max_file_size_mb * 1024 * 1024,  # Convert MB to bytes
             'http_headers': {
                 'User-Agent': settings.user_agent,
             },
         }
 
-        # Add Instagram authentication if credentials are provided
-        # This enables downloading carousel posts and private content
-        if settings.instagram_username and settings.instagram_password:
+        # Check if authentication is available
+        self.has_auth = bool(settings.instagram_username and settings.instagram_password)
+
+        if self.has_auth:
             self.base_ydl_opts['username'] = settings.instagram_username
             self.base_ydl_opts['password'] = settings.instagram_password
             logger.info(f"Instagram authentication enabled for user: {settings.instagram_username}")
         else:
-            logger.info("Instagram authentication disabled - only public single media supported")
+            logger.info("No authentication - using proxy/embed methods for public content")
 
     def download(self, shortcode: str) -> Tuple[Path, Optional[Path], MediaMetadata]:
-        """Download Instagram media (video or photo) using shortcode.
+        """Download Instagram media using best available method.
+
+        Strategy:
+        1. Try proxy/embed method (no auth, fast)
+        2. Fall back to yt-dlp if available
+        3. Fall back to Instaloader if credentials provided
 
         Args:
-            shortcode: Instagram post shortcode (11 characters)
+            shortcode: Instagram post shortcode (8-15 characters)
 
         Returns:
             Tuple of (media_path, thumbnail_path, metadata)
-            - For videos: (video.mp4, thumbnail.jpg, metadata)
-            - For photos: (photo.jpg, None, metadata)
 
         Raises:
             PrivateAccountError: Content is from a private account
             ContentNotFoundError: Content doesn't exist or was deleted
             RateLimitExceededError: Instagram rate limiting detected
-            DownloadFailedError: Download failed after all retries
-            InstagramAPIError: Instagram structure changed or other API errors
+            DownloadFailedError: All download methods failed
         """
-        url = f"https://www.instagram.com/p/{shortcode}/"
         target_dir = settings.download_dir / shortcode
         target_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Starting download for shortcode: {shortcode}")
+
+        # Strategy 1: Try yt-dlp with auth first (BEST QUALITY)
+        if self.has_auth:
+            try:
+                logger.info("Trying yt-dlp with authentication...")
+                return self._download_via_ytdlp(shortcode, target_dir)
+            except Exception as e:
+                logger.warning(f"yt-dlp method failed: {e}")
+
+        # Strategy 2: Fallback to proxy/embed method (NO AUTH REQUIRED)
+        try:
+            logger.info("Trying proxy/embed method (no authentication)...")
+            return self._download_via_proxy(shortcode, target_dir)
+        except Exception as e:
+            logger.warning(f"Proxy method failed: {e}")
+
+        # All methods failed
+        raise DownloadFailedError(
+            "All download methods failed. Content may be private or Instagram blocking access.",
+            details={"shortcode": shortcode}
+        )
+
+    def _download_via_proxy(self, shortcode: str, target_dir: Path) -> Tuple[Path, Optional[Path], MediaMetadata]:
+        """Download using proxy/embed method (no authentication).
+
+        Args:
+            shortcode: Post shortcode
+            target_dir: Target directory
+
+        Returns:
+            Tuple of (media_path, thumbnail_path, metadata)
+        """
+        # Get media URLs from proxy
+        data = self.proxy_downloader.get_media_urls(shortcode)
+
+        if not data or 'media_urls' not in data:
+            raise DownloadFailedError("No media URLs found")
+
+        # Download first media URL (main image/video)
+        media_urls = data['media_urls']
+        if not media_urls:
+            raise DownloadFailedError("Empty media URLs list")
+
+        # Determine file extension
+        main_url = media_urls[0]
+        if '.mp4' in main_url:
+            ext = 'mp4'
+            is_video = True
+        elif '.jpg' in main_url or 'jpg' in main_url:
+            ext = 'jpg'
+            is_video = False
+        elif '.png' in main_url:
+            ext = 'png'
+            is_video = False
+        else:
+            ext = 'jpg'  # Default
+            is_video = False
+
+        # Create filename
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        media_filename = f"{date_str}_{shortcode}.{ext}"
+        media_path = target_dir / media_filename
+
+        # Download media
+        logger.info(f"Downloading from CDN: {main_url[:80]}...")
+        self.proxy_downloader.download_media(main_url, str(media_path))
+
+        # Download thumbnail if available (second URL is usually thumbnail)
+        thumbnail_path = None
+        if len(media_urls) > 1 and is_video:
+            thumb_url = media_urls[1]
+            thumbnail_filename = f"{date_str}_{shortcode}_thumb.jpg"
+            thumbnail_path = target_dir / thumbnail_filename
+
+            try:
+                self.proxy_downloader.download_media(thumb_url, str(thumbnail_path))
+            except Exception as e:
+                logger.warning(f"Failed to download thumbnail: {e}")
+                thumbnail_path = None
+
+        # Build metadata
+        metadata = MediaMetadata(
+            shortcode=shortcode,
+            duration_seconds=None,
+            width=None,
+            height=None,
+            size_bytes=media_path.stat().st_size if media_path.exists() else None,
+            download_timestamp=datetime.utcnow(),
+        )
+
+        logger.info(f"Proxy download successful: {media_path}")
+        return media_path, thumbnail_path, metadata
+
+    def _download_via_ytdlp(self, shortcode: str, target_dir: Path) -> Tuple[Path, Optional[Path], MediaMetadata]:
+        """Download using yt-dlp (fallback method).
+
+        Args:
+            shortcode: Post shortcode
+            target_dir: Target directory
+
+        Returns:
+            Tuple of (media_path, thumbnail_path, metadata)
+        """
+        url = f"https://www.instagram.com/p/{shortcode}/"
 
         try:
             logger.info(f"Fetching Instagram content for shortcode: {shortcode}")
@@ -108,6 +227,15 @@ class ReelsDownloader:
                 size_bytes=media_path.stat().st_size if media_path.exists() else None,
                 download_timestamp=datetime.utcnow(),
             )
+
+            # Extract and save text metadata if enabled
+            if settings.save_metadata:
+                try:
+                    logger.info(f"Extracting text metadata for {shortcode}")
+                    text_metadata = InstagramMetadataExtractor.extract_from_ytdlp(info, shortcode)
+                    MetadataStorage.save_metadata(shortcode, text_metadata)
+                except Exception as e:
+                    logger.warning(f"Failed to save text metadata: {e}")
 
             logger.info(f"Download completed successfully: {shortcode} ({media_type})")
             return media_path, thumbnail_path, metadata
@@ -209,14 +337,31 @@ class ReelsDownloader:
         for ext in possible_extensions:
             media_file = target_dir / f"{date_str}_{shortcode}.{ext}"
             if media_file.exists():
-                logger.info(f"Media file found: {media_file}")
+                # Check file size
+                file_size_mb = media_file.stat().st_size / (1024 * 1024)
+                if file_size_mb > settings.max_file_size_mb:
+                    media_file.unlink()  # Delete oversized file
+                    raise DownloadFailedError(
+                        f"File size ({file_size_mb:.1f}MB) exceeds limit ({settings.max_file_size_mb}MB)",
+                        details={"file_size_mb": file_size_mb, "limit_mb": settings.max_file_size_mb}
+                    )
+                logger.info(f"Media file found: {media_file} ({file_size_mb:.1f}MB)")
                 return media_file
 
         # If not found with expected naming, search directory
         media_files = list(target_dir.glob(f"*{shortcode}*"))
         if media_files:
-            logger.warning(f"Using alternative file: {media_files[0]}")
-            return media_files[0]
+            media_file = media_files[0]
+            # Check file size
+            file_size_mb = media_file.stat().st_size / (1024 * 1024)
+            if file_size_mb > settings.max_file_size_mb:
+                media_file.unlink()  # Delete oversized file
+                raise DownloadFailedError(
+                    f"File size ({file_size_mb:.1f}MB) exceeds limit ({settings.max_file_size_mb}MB)",
+                    details={"file_size_mb": file_size_mb, "limit_mb": settings.max_file_size_mb}
+                )
+            logger.warning(f"Using alternative file: {media_file} ({file_size_mb:.1f}MB)")
+            return media_file
 
         raise DownloadFailedError(
             "Media file not found after download",

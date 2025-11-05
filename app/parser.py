@@ -22,6 +22,7 @@ class ReelsURLParser:
         re.compile(r'instagram\.com/reel/([A-Za-z0-9_-]+)'),
         re.compile(r'instagram\.com/p/([A-Za-z0-9_-]+)'),  # Posts can also be videos
         re.compile(r'instagram\.com/tv/([A-Za-z0-9_-]+)'),  # Legacy IGTV format
+        re.compile(r'instagram\.com/[^/]+/reel/([A-Za-z0-9_-]+)'),  # Username/reel format
     ]
 
     @classmethod

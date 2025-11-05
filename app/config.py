@@ -6,7 +6,7 @@ Centralizes all configuration with type validation and environment variable supp
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -16,6 +16,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "ignore"  # Allow extra fields in .env
 
     # Server Configuration
     server_host: str = "127.0.0.1"
@@ -37,6 +38,16 @@ class Settings(BaseSettings):
     # Instagram Authentication (Optional - for carousel/private content support)
     instagram_username: Optional[str] = None
     instagram_password: Optional[str] = None
+
+    # Instagram Graph API (Official API for business accounts)
+    instagram_graph_api_token: Optional[str] = None
+    facebook_app_id: Optional[str] = None
+    facebook_app_secret: Optional[str] = None
+
+    # Metadata Collection
+    save_metadata: bool = True  # Save captions, hashtags, etc. to JSON
+    include_comments: bool = False  # Fetch comments (requires Instagram auth)
+    max_comments: int = 50  # Maximum comments to fetch per post
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
